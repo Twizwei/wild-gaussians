@@ -37,6 +37,8 @@ from .types import (
     GenericCameras,
     OptimizeEmbeddingOutput,
 )
+from .Depth_Anything_V2.depth_anything_v2.dpt import DepthAnythingV2
+from torchmetrics.functional.regression import pearson_corrcoef
 
 T = TypeVar("T")
 
@@ -136,6 +138,12 @@ def ssim_down(x, y, max_size=None):
 
 
 def _ssim_parts(img1, img2, window_size=11):
+    # if img1.size(-3) > img2.size(-3):
+    #     # repeat the channel dimension of img2 to match img1
+    #     img2 = img2.repeat_interleave(img1.size(-3), dim=-3)
+    # elif img1.size(-3) < img2.size(-3):
+    #     # repeat the channel dimension of img1 to match img2
+    #     img1 = img1.repeat_interleave(img2.size(-3), dim=-3)
     sigma = 1.5
     channel = img1.size(-3)
     # Create window
@@ -456,6 +464,40 @@ class UncertaintyModel(nn.Module):
         torch.save(state, os.path.join(path, "checkpoint.pth"))
 
 
+class DepthModel(nn.Module):
+    def __init__(self, encoder='vitl', freeze=True):
+        super().__init__()
+        model_configs = {
+            'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+            'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+            'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+        }
+        self.encoder = encoder
+        self.model = DepthAnythingV2(**model_configs[encoder])
+        self.model.load_state_dict(torch.load(f'/vulcanscratch/yiranx/codes/wild-gaussians/wildgaussians/Depth_Anything_V2/checkpoints/depth_anything_v2_{encoder}.pth', map_location='cpu'))
+        self.model = self.model.eval()
+        
+        if freeze:
+            for param in self.model.parameters():
+                param.requires_grad = False
+    
+    def forward(self, x, input_size=518):
+        h, w = x.shape[-2:]
+        x = F.interpolate(x, size=(input_size, input_size), mode='bilinear', align_corners=True)
+        x = self.normalize_input(x)
+        depth = self.model(x)
+        depth = F.interpolate(depth[:, None], (h, w), mode="bilinear", align_corners=True)[0, 0]
+        return depth
+
+    def normalize_input(self, x, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+        """
+        Suppose the input is in [0, 1], with shape [B, 3, H, W]
+        """
+        for i in range(3):
+            x[:, i, :, :] = (x[:, i, :, :] - mean[i]) / std[i]
+        return x
+
 #
 # SH eval
 #
@@ -642,6 +684,12 @@ def build_rotation(r, device):
 
 # SSIM
 def ssim(img1, img2, window_size=11, size_average=True):
+    # if img1.size(-3) > img2.size(-3):
+    #     # repeat the channel dimension of img2 to match img1
+    #     img2 = img2.repeat_interleave(img1.size(-3), dim=-3)
+    # elif img1.size(-3) < img2.size(-3):
+    #     # repeat the channel dimension of img1 to match img2
+    #     img1 = img1.repeat_interleave(img2.size(-3), dim=-3)
     sigma = 1.5
     channel = img1.size(-3)
     # Create window
@@ -870,35 +918,118 @@ def _get_fourier_features(xyz: Tensor, num_features=3):
     feat = torch.sin(feat).view(-1, reduce(mul, feat.shape[1:]))
     return feat
 
+class StepFunctionEncoder(nn.Module):
+    """
+    Modified from https://github.com/zju3dv/NeuSC/blob/66e234a0a2cf84adad9c4d0dee657e09ea857ce5/lib/networks/encoding/step_func.py
+    """
+    def __init__(self, time_dim, init_val=0.1, hard_forward=True):
+        super().__init__()
+        self.mean = nn.Parameter(torch.rand(time_dim))  # Transition points
+        self.beta = nn.Parameter(torch.ones(time_dim) * init_val)  # Steepness
+        self.hard_forward = hard_forward
+
+    def forward(self, t):
+        if t is None:
+            return None  # Skip time encoding if not used
+
+        mean = self.mean[None]  # Shape expansion for broadcasting
+        beta = self.beta[None]
+        output = t - mean
+
+        msk = output <= 0.
+        output[msk] = 0.5 * torch.exp(output[msk] / torch.clamp_min(torch.abs(beta.repeat(len(msk), 1)[msk]), 1e-3))
+        output[~msk] = 1 - 0.5 * torch.exp(-output[~msk] / torch.clamp_min(torch.abs(beta.repeat(len(msk), 1)[~msk]), 1e-3))
+
+        if self.hard_forward:
+            msk = output <= 0.5
+            output[msk] = 0. + output[msk] - output[msk].detach()
+            output[~msk] = 1. + output[~msk] - output[~msk].detach()
+
+        return output
+
+# class EmbeddingModel(nn.Module):
+#     def __init__(self, config: Config):
+#         super().__init__()
+#         self.config = config
+#         # sh_coeffs = 4**2
+#         feat_in = 3
+#         if config.appearance_model_sh:
+#             feat_in = ((config.sh_degree + 1) ** 2) * 3
+#         self.mlp = nn.Sequential(
+#             nn.Linear(config.appearance_embedding_dim + feat_in + 6 * self.config.appearance_n_fourier_freqs, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, feat_in*2),
+#         )
+
+#     def forward(self, gembedding, aembedding, color, viewdir=None):
+#         del viewdir  # Viewdirs interface is kept to be compatible with prev. version
+
+#         input_color = color
+#         if not self.config.appearance_model_sh:
+#             color = color[..., :3]
+#         inp = torch.cat((color, gembedding, aembedding), dim=-1)
+#         offset, mul = torch.split(self.mlp(inp) * 0.01, [color.shape[-1], color.shape[-1]], dim=-1)
+#         offset = torch.cat((offset / C0, torch.zeros_like(input_color[..., offset.shape[-1]:])), dim=-1)
+#         mul = mul.repeat(1, input_color.shape[-1] // mul.shape[-1])
+#         return input_color * mul + offset
 
 class EmbeddingModel(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config):
         super().__init__()
         self.config = config
-        # sh_coeffs = 4**2
-        feat_in = 3
+        self.use_time = config.use_time  # Decide whether to use time embedding
+        
+        # Feature input size: Color + Global + Appearance
+        feat_in = 3  # RGB color channels
         if config.appearance_model_sh:
-            feat_in = ((config.sh_degree + 1) ** 2) * 3
+            feat_in = ((config.sh_degree + 1) ** 2) * 3  # SH coefficients
+
+        # Initialize step function encoder only if using time
+        time_dim = config.time_embedding_dim if self.use_time else 0
+        self.time_encoder = StepFunctionEncoder(time_dim, init_val=0.1, hard_forward=True) if self.use_time else None
+
+        # Define MLP input size, considering optional time embedding
+        mlp_input_dim = config.appearance_embedding_dim + feat_in + 6 * self.config.appearance_n_fourier_freqs + time_dim
+        
         self.mlp = nn.Sequential(
-            nn.Linear(config.appearance_embedding_dim + feat_in + 6 * self.config.appearance_n_fourier_freqs, 128),
+            nn.Linear(mlp_input_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, feat_in*2),
+            nn.Linear(128, feat_in * 2),  # Outputs offset and mul
         )
 
-    def forward(self, gembedding, aembedding, color, viewdir=None):
-        del viewdir  # Viewdirs interface is kept to be compatible with prev. version
+    def forward(self, gembedding, aembedding, color, time=None, viewdir=None):
+        del viewdir  # Unused
 
         input_color = color
         if not self.config.appearance_model_sh:
             color = color[..., :3]
-        inp = torch.cat((color, gembedding, aembedding), dim=-1)
-        offset, mul = torch.split(self.mlp(inp) * 0.01, [color.shape[-1], color.shape[-1]], dim=-1)
-        offset = torch.cat((offset / C0, torch.zeros_like(input_color[..., offset.shape[-1]:])), dim=-1)
-        mul = mul.repeat(1, input_color.shape[-1] // mul.shape[-1])
-        return input_color * mul + offset
 
+        # Compute time embedding only if enabled
+        t_embedding = None
+        if self.use_time and time is not None:
+            t_embedding = self.time_encoder(time)  # Shape: (num_timestamps, time_dim)
+            t_embedding = t_embedding.repeat(gembedding.shape[0], 1)  # Expand to match num_gaussians
+
+        # Concatenate inputs
+        if self.use_time and t_embedding is not None:
+            inp = torch.cat((color, gembedding, aembedding, t_embedding), dim=-1)
+        else:
+            inp = torch.cat((color, gembedding, aembedding), dim=-1)
+
+        # Pass through MLP
+        offset, mul = torch.split(self.mlp(inp) * 0.01, [color.shape[-1], color.shape[-1]], dim=-1)
+
+        # Offset adjustment
+        offset = torch.cat((offset / C0, torch.zeros_like(input_color[..., offset.shape[-1]:])), dim=-1)
+
+        # Mul adjustment
+        mul = mul.repeat(1, input_color.shape[-1] // mul.shape[-1])
+
+        return input_color * mul + offset
 
 class GaussianModel(nn.Module):
     xyz: nn.Parameter
@@ -981,6 +1112,12 @@ class GaussianModel(nn.Module):
             self.uncertainty_model = UncertaintyModel(self.config)
         else:
             self.uncertainty_model = None
+        
+        # self.depth_model = None
+        if self.config.depth_mode != "disabled":
+            self.depth_model = DepthModel(freeze=True)
+        else:
+            self.depth_model = None
 
         if training_setup:
             self.train()
@@ -1023,7 +1160,7 @@ class GaussianModel(nn.Module):
             embeddings.add_(torch.randn_like(embeddings) * 0.0001)
             if not self.config.appearance_init_fourier:
                 embeddings.normal_(0, 0.01)
-            self.embeddings.data.copy_(embeddings)
+            self.embeddings.data.copy_(embeddings)  # per-gaussian embedding
         self.max_radii2D.fill_(0.0)
 
     def _setup_optimizers(self):
@@ -1482,7 +1619,7 @@ class GaussianModel(nn.Module):
                          *,
                          kernel_size: float, 
                          scaling_modifier = 1.0, 
-                         embedding: Optional[torch.Tensor],
+                         embedding: Optional[torch.Tensor],  # appearance embedding
                          return_raw: bool = True,
                          render_depth: bool = False):
         """
@@ -1589,6 +1726,7 @@ class GaussianModel(nn.Module):
         if self.config.appearance_enabled:
             assert self.appearance_mlp is not None
             assert self.embeddings is not None
+            # import pdb; pdb.set_trace()
             colors_toned = self.appearance_mlp(self.embeddings, embedding_expanded, features).clamp_max(1.0)
 
             # if self.config.appearance_model_sh:
@@ -1742,7 +1880,7 @@ class WildGaussians(Method):
         return MethodInfo(
             method_id="wild-gaussians",  # Will be filled by the registry
             required_features=frozenset(("color", "points3D_xyz")),
-            supported_camera_models=frozenset(("pinhole",)),
+            supported_camera_models=frozenset(("pinhole", "opencv")),
         )
 
     def get_info(self) -> ModelInfo:
@@ -1759,7 +1897,7 @@ class WildGaussians(Method):
     ) -> OptimizeEmbeddingOutput:
         device = self.model.xyz.device
         camera = dataset["cameras"].item()
-        assert camera.camera_models == camera_model_to_int("pinhole"), "Only pinhole cameras supported"
+        # assert camera.camera_models == camera_model_to_int("pinhole"), "Only pinhole cameras supported"
 
         self.model.eval()
         i = 0
@@ -1833,11 +1971,11 @@ class WildGaussians(Method):
         del kwargs
         camera = camera.item()
         device = self.model.xyz.device
-        assert camera.camera_models == camera_model_to_int("pinhole"), "Only pinhole cameras supported"
-        render_depth = False
+        # assert camera.camera_models == camera_model_to_int("pinhole"), "Only pinhole cameras supported"
+        render_depth = True
         if options is not None and "depth" in options.get("outputs", ()):
             render_depth = True
-
+        
         self.model.eval()
         with torch.no_grad():
             _np_embedding = (options or {}).get("embedding", None)
@@ -1861,6 +1999,7 @@ class WildGaussians(Method):
                 "color": color,
                 "accumulation": out["accumulation"].squeeze(-1).detach().cpu().numpy(),
             }
+
             if out.get("depth") is not None:
                 ret_out["depth"] = out["depth"].detach().cpu().numpy()
             return ret_out
@@ -1905,8 +2044,15 @@ class WildGaussians(Method):
         # Render
         # NOTE: random background color is not supported
 
-        embedding = self.model.get_embedding(train_image_id=camera_id)
-        render_pkg = self.model._render_internal(viewpoint_cam, config=self.config, embedding=embedding, kernel_size=self.config.kernel_size)
+        # skip this iteration if the resolution of the image is too big
+        if (image_width * image_height) > 2700 * 1800:
+            logging.info(f"Skipping iteration {iteration} because the image is too big")
+            return {}
+
+        embedding = self.model.get_embedding(train_image_id=camera_id)  # appearance embedding, per camera/image
+        render_depth = True if self.model.depth_model is not None else False
+
+        render_pkg = self.model._render_internal(viewpoint_cam, config=self.config, embedding=embedding, kernel_size=self.config.kernel_size, render_depth=render_depth)
         image_toned: Tensor
         image_toned, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["raw_render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -1916,6 +2062,8 @@ class WildGaussians(Method):
         # Loss
         gt_image = self.train_images[camera_id].to(device)
         sampling_mask = self.train_sampling_masks[camera_id].to(device) if self.train_sampling_masks is not None else None 
+
+        
 
         # Apply mask
         if sampling_mask is not None:
@@ -1945,6 +2093,18 @@ class WildGaussians(Method):
                 image_toned = scale_grads(image_toned, loss_mult)
                 loss_mult = 1
 
+        # depth regularization
+        if self.model.depth_model is not None:
+            gt_depth = self.model.depth_model(gt_image.unsqueeze(0)).reshape(-1, 1)
+            render_depth = render_pkg["depth"].reshape(-1, 1)
+            # from https://github.com/VITA-Group/FSGS/blob/a536a64c5b366b1088be64eeadf9e791ca26897c/train.py#L105-L108
+            depth_loss = min(
+                        (1 - pearson_corrcoef( - gt_depth, render_depth)),
+                        (1 - pearson_corrcoef(1 / (gt_depth + 200.), render_depth))
+            )
+        else:
+            depth_loss = 0.0
+
         Ll1 = torch.nn.functional.l1_loss(image_toned, gt_image, reduction='none')
         ssim_value = ssim(image, gt_image, size_average=False)
 
@@ -1957,11 +2117,14 @@ class WildGaussians(Method):
                 uncertainty_loss = uncertainty_loss.detach()  # type: ignore
             except AttributeError:
                 pass
+        
+        
 
         loss = (
             (1.0 - self.config.lambda_dssim) * (Ll1 * loss_mult).mean() + 
             self.config.lambda_dssim * ((1.0 - ssim_value) * loss_mult).mean() + 
-            uncertainty_loss
+            uncertainty_loss +
+            self.config.lambda_depth * depth_loss 
         )
         loss.backward()
 

@@ -19,6 +19,8 @@ class Config:
     data_device: str = "cuda"
     eval: bool = False
     kernel_size: float = 0.1
+    downscale_loaded_factor: int = 1
+    downscale_factor: int = 1
 
     convert_SHs_python: bool = False
     compute_cov3D_python: bool = False
@@ -91,3 +93,13 @@ class Config:
 
     uncertainty_warmup_iters: int = 0
     uncertainty_warmup_start: int = 2000
+
+    # Depth model
+    depth_mode: str = "disabled"
+    depth_encoder: str = "vitl"
+    # depth_pretrain_path: str = "checkpoints/depth_anything_v2.pth"
+    lambda_depth: float = 0.5
+
+
+    # time embedding
+    use_time: bool = False

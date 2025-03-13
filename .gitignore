@@ -161,3 +161,10 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 *.swp
+jobs/*
+tensborboard/*
+data/
+predictions/
+tensborboard/
+wildgaussians_ckpts
+wildgaussians_ckpts/
