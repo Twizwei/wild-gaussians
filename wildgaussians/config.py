@@ -103,3 +103,6 @@ class Config:
 
     # time embedding
     use_time: bool = False
+    time_embedding_dim: int = 16
+    init_val: float = 0.3
+    hard_forward: bool = False

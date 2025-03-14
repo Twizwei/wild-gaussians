@@ -987,11 +987,11 @@ class EmbeddingModel(nn.Module):
             feat_in = ((config.sh_degree + 1) ** 2) * 3  # SH coefficients
 
         # Initialize step function encoder only if using time
-        time_dim = config.time_embedding_dim if self.use_time else 0
-        self.time_encoder = StepFunctionEncoder(time_dim, init_val=0.1, hard_forward=True) if self.use_time else None
+        self.time_dim = config.time_embedding_dim if self.use_time else 0
+        self.time_encoder = StepFunctionEncoder(self.time_dim, init_val=config.init_val, hard_forward=config.hard_forward) if self.use_time else None
 
         # Define MLP input size, considering optional time embedding
-        mlp_input_dim = config.appearance_embedding_dim + feat_in + 6 * self.config.appearance_n_fourier_freqs + time_dim
+        mlp_input_dim = config.appearance_embedding_dim + feat_in + 6 * self.config.appearance_n_fourier_freqs + self.time_dim
         
         self.mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, 128),
@@ -1015,8 +1015,12 @@ class EmbeddingModel(nn.Module):
             t_embedding = t_embedding.repeat(gembedding.shape[0], 1)  # Expand to match num_gaussians
 
         # Concatenate inputs
-        if self.use_time and t_embedding is not None:
-            inp = torch.cat((color, gembedding, aembedding, t_embedding), dim=-1)
+        if self.use_time:  
+            if t_embedding is not None:
+                inp = torch.cat((color, gembedding, aembedding, t_embedding), dim=-1)
+            else:
+                # set t_embedding to zero if not provided
+                inp = torch.cat((color, gembedding, aembedding, torch.zeros_like(gembedding[:, :self.time_dim])), dim=-1)
         else:
             inp = torch.cat((color, gembedding, aembedding), dim=-1)
 
@@ -1617,6 +1621,7 @@ class GaussianModel(nn.Module):
                          viewpoint_camera: Cameras, 
                          config: Config, 
                          *,
+                         timestamp: Optional[float] = None,
                          kernel_size: float, 
                          scaling_modifier = 1.0, 
                          embedding: Optional[torch.Tensor],  # appearance embedding
@@ -1726,8 +1731,13 @@ class GaussianModel(nn.Module):
         if self.config.appearance_enabled:
             assert self.appearance_mlp is not None
             assert self.embeddings is not None
-            # import pdb; pdb.set_trace()
-            colors_toned = self.appearance_mlp(self.embeddings, embedding_expanded, features).clamp_max(1.0)
+
+            if not self.config.use_time:
+                colors_toned = self.appearance_mlp(self.embeddings, embedding_expanded, features).clamp_max(1.0)
+            else:
+                assert self.config.use_time
+                assert self.embeddings is not None
+                colors_toned = self.appearance_mlp(self.embeddings, embedding_expanded, features, time=timestamp).clamp_max(1.0)
 
             # if self.config.appearance_model_sh:
             shdim = (self.config.sh_degree + 1) ** 2
@@ -1874,6 +1884,15 @@ class WildGaussians(Method):
         self._viewpoint_stack = []
 
         self.model.compute_3D_filter(cameras=self.train_cameras)
+
+        if self.config.use_time:
+            assert self.config.appearance_enabled, "Time-based appearance optimization requires appearance to be enabled"
+            # ad-hoc: pseudo timestamps
+            length_timestamps = len(train_dataset["cameras"])
+            # normalize timestamps to [0, 1]
+            self.times = torch.linspace(0, 1, length_timestamps).to(device=self.model.xyz.device)
+
+            
 
     @classmethod
     def get_method_info(cls) -> MethodInfo:
@@ -2049,10 +2068,17 @@ class WildGaussians(Method):
             logging.info(f"Skipping iteration {iteration} because the image is too big")
             return {}
 
+        if not self.config.use_time:
+            timestamp = None
+        else:
+            assert self.config.use_time
+            assert self.times is not None
+            timestamp = self.times[camera_id].unsqueeze(0).to(device=device)
+
         embedding = self.model.get_embedding(train_image_id=camera_id)  # appearance embedding, per camera/image
         render_depth = True if self.model.depth_model is not None else False
-
-        render_pkg = self.model._render_internal(viewpoint_cam, config=self.config, embedding=embedding, kernel_size=self.config.kernel_size, render_depth=render_depth)
+        # render_pkg = self.model._render_internal(viewpoint_cam, config=self.config, embedding=embedding, kernel_size=self.config.kernel_size, render_depth=render_depth)
+        render_pkg = self.model._render_internal(viewpoint_cam, config=self.config, timestamp=timestamp, embedding=embedding, kernel_size=self.config.kernel_size, render_depth=render_depth)
         image_toned: Tensor
         image_toned, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["raw_render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -2203,3 +2229,4 @@ class WildGaussians(Method):
         sha = get_torch_checkpoint_sha(ckpt)
         with open(ckpt_path + ".sha256", "w", encoding="utf8") as f:
             f.write(sha)
+                           

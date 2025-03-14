@@ -25,7 +25,7 @@ cd /vulcanscratch/yiranx/codes/wild-gaussians
 # nerfbaselines train --method wild-gaussians --data /vulcanscratch/yiranx/denso_obrm/megascenes/272/650/colmap_0 --output wildgaussians_ckpts/272650_noEmbed_phototourism_noUnDistort_resize --save-iters 30000::30000 --set 'appearance_enabled=false' --set 'uncertainty_mode=disabled' --set 'iterations=70000' --set 'num_sky_gaussians=50000' --set 'downscale_loaded_factor=2'
 # nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden/ --output wildgaussians_ckpts/garden_3dgs_wg_iter70_000 --save-iters 30000::30000 --set "depth_mode='disabled'"  --set "num_sky_gaussians=100" --set 'appearance_enabled=false' --set 'uncertainty_mode=disabled'
 # nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden_disturbed/ --output wildgaussians_ckpts/garden_perturb_ApprOcclu_wg_iter70_000 --save-iters 30000::30000 --set "depth_mode='disabled'"  --set "num_sky_gaussians=100" --set 'iterations=70000'
-nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden_disturbed/ --output wildgaussians_ckpts/garden_perturb_ApprOccluHard_wg_iter70_000 --save-iters 30000::30000 --set "depth_mode='disabled'"  --set "num_sky_gaussians=100" --set 'iterations=70000'
+# nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden_disturbed/ --output wildgaussians_ckpts/garden_perturb_ApprOccluHard_wg_iter70_000 --save-iters 30000::30000 --set "depth_mode='disabled'"  --set "num_sky_gaussians=100" --set 'iterations=70000'
 
 # nerfbaselines train --method wild-gaussians --data /vulcanscratch/yiranx/denso_obrm/megascenes/124/127/colmap_0 --output wildgaussians_ckpts/124127_phototourism_noUnDistort --save-iters 30000::30000 --set 'iterations=70000' --set 'num_sky_gaussians=50000'
 # nerfbaselines train --method wild-gaussians --data /vulcanscratch/yiranx/denso_obrm/megascenes/272/650/colmap_0 --output wildgaussians_ckpts/272650_phototourism_noUnDistort --save-iters 30000::30000 --set 'iterations=70000' --set 'num_sky_gaussians=50000'
@@ -51,3 +51,7 @@ nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden_distur
 # reproduce
 # nerfbaselines train --method wild-gaussians --data external://phototourism/trevi-fountain --output wildgaussians_ckpts/trevi-fountain_phototourism_reproduce_iter200_000 --save-iters 30000::30000
 # nerfbaselines train --method wild-gaussians --data external://phototourism/brandenburg-gate --output wildgaussians_ckpts/brandenburg-gate_phototourism_iter200_000 --save-iters 30000::30000
+
+
+# time embeddings
+nerfbaselines train --method wild-gaussians --data data/mipnerf360/garden_disturbed/ --output wildgaussians_ckpts/garden_perturb_ApprOccluHard_wg_tEmbed_iter70_000 --save-iters 30000::30000 --set "depth_mode='disabled'"  --set "num_sky_gaussians=100" --set 'iterations=70000' --set 'use_time=True' 
