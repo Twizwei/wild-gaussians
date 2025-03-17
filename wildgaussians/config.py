@@ -98,7 +98,9 @@ class Config:
     depth_mode: str = "disabled"
     depth_encoder: str = "vitl"
     # depth_pretrain_path: str = "checkpoints/depth_anything_v2.pth"
-    lambda_depth: float = 0.5
+    lambda_depth: float = 0.05
+    depth_reg_from_iter: int = 15000
+    
 
 
     # time embedding

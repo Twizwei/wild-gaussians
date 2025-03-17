@@ -1854,6 +1854,8 @@ class WildGaussians(Method):
             train_dataset["points3D_xyz"] = np.concatenate((points3D_xyz, skybox))
             train_dataset["points3D_rgb"] = np.concatenate((points3D_rgb, skycolor))
             opacities = np.concatenate((opacities, 1.0 * np.ones(skybox.shape[0])))
+        else:
+            train_dataset = train_dataset.copy()  # do nothing, just copy
 
         # import trimesh
         # _ = trimesh.PointCloud(skybox).export("/tmp/back.ply")
@@ -1900,6 +1902,7 @@ class WildGaussians(Method):
             method_id="wild-gaussians",  # Will be filled by the registry
             required_features=frozenset(("color", "points3D_xyz")),
             supported_camera_models=frozenset(("pinhole", "opencv")),
+            # supported_camera_models=frozenset(("pinhole", )),
         )
 
     def get_info(self) -> ModelInfo:
@@ -2120,13 +2123,33 @@ class WildGaussians(Method):
                 loss_mult = 1
 
         # depth regularization
-        if self.model.depth_model is not None:
+        if self.model.depth_model is not None and iteration > self.config.depth_reg_from_iter:
+            # gt_depth = self.model.depth_model(gt_image.unsqueeze(0))
+            # render_depth_map = render_pkg["depth"]
+            # # visualize depth and save as png
+            # import cv2
+            # # Convert tensors to numpy arrays
+            # gt_depth_np = gt_depth.detach().cpu().numpy()
+            # render_depth_np = render_depth_map.detach().cpu().numpy()
+            
+            # # Normalize to 0-255
+            # gt_depth_np = (gt_depth_np - gt_depth_np.min()) / (gt_depth_np.max() - gt_depth_np.min()) * 255
+            # render_depth_np = (render_depth_np - render_depth_np.min()) / (render_depth_np.max() - render_depth_np.min()) * 255
+            
+            # # Save as PNG
+            # # get the current directory
+            # cv2.imwrite("/vulcanscratch/yiranx/codes/wild-gaussians/gt_depth.png", gt_depth_np.astype(np.uint8))
+            # cv2.imwrite("/vulcanscratch/yiranx/codes/wild-gaussians/render_depth.png", render_depth_np.astype(np.uint8))
+            # import pdb; pdb.set_trace() 
+            # depth loss by disparity
+
+
             gt_depth = self.model.depth_model(gt_image.unsqueeze(0)).reshape(-1, 1)
-            render_depth = render_pkg["depth"].reshape(-1, 1)
+            render_depth_map = render_pkg["depth"].reshape(-1, 1)
             # from https://github.com/VITA-Group/FSGS/blob/a536a64c5b366b1088be64eeadf9e791ca26897c/train.py#L105-L108
             depth_loss = min(
-                        (1 - pearson_corrcoef( - gt_depth, render_depth)),
-                        (1 - pearson_corrcoef(1 / (gt_depth + 200.), render_depth))
+                        (1 - pearson_corrcoef( - gt_depth, render_depth_map)),
+                        (1 - pearson_corrcoef(1 / (gt_depth + 200.), render_depth_map))
             )
         else:
             depth_loss = 0.0
@@ -2229,4 +2252,3 @@ class WildGaussians(Method):
         sha = get_torch_checkpoint_sha(ckpt)
         with open(ckpt_path + ".sha256", "w", encoding="utf8") as f:
             f.write(sha)
-                           
